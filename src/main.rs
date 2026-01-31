@@ -2,9 +2,11 @@
 #![no_std]
 
 mod life;
+use embedded_hal::delay::DelayNs;
 use life::*;
 
-use microbit::hal;
+use embedded_hal::digital::InputPin;
+use microbit::hal::{Rng, Timer};
 use panic_rtt_target as _;
 use rtt_target::{rprintln, rtt_init_print};
 
@@ -12,23 +14,112 @@ use cortex_m_rt::entry;
 use microbit::board::Board;
 use microbit::display::blocking::Display;
 
+const FRAME_DELAY: u32 = 100;
+
+enum State {
+    Init,
+    Running,
+    Reset,
+    Randomize,
+}
+
+fn get_one_or_zero(rng: &mut Rng) -> u8 {
+    rng.random_u8() % 2
+}
+
+fn generate_random_board(fb: &mut [[u8; 5]; 5], rng: &mut Rng) {
+    for row in fb.iter_mut() {
+        for val in row.iter_mut() {
+            *val = get_one_or_zero(rng);
+        }
+    }
+}
+
+fn compliment_board(fb: &mut [[u8; 5]; 5]) {
+    for row in fb.iter_mut() {
+        for val in row.iter_mut() {
+            *val ^= 1;
+        }
+    }
+}
+
 #[entry]
 fn main() -> ! {
+    // Setup Board Stuff
     rtt_init_print!();
     let _board = Board::take().unwrap();
     let mut display = Display::new(_board.display_pins);
-    let mut timer = hal::Timer::new(_board.TIMER0);
-    let mut life_grid = [
-        [0, 1, 0, 0, 0],
-        [1, 0, 0, 0, 0],
+    let mut timer = Timer::new(_board.TIMER0);
+    let mut rng = Rng::new(_board.RNG);
+    let mut button_a = _board.buttons.button_a;
+    let mut button_b = _board.buttons.button_b;
+
+    // Setup Program State
+    let mut state = State::Init;
+    let mut life_grid: [[u8; 5]; 5] = [
         [0, 0, 0, 0, 0],
-        [0, 0, 1, 1, 0],
-        [0, 1, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
     ];
 
+    // Main Program Logic
+    let mut ignore_b = 0;
     loop {
-        display.show(&mut timer, life_grid, 1000);
-        life(&mut life_grid);
-        core::hint::spin_loop();
+        let a_pressed = button_a.is_low().unwrap();
+        let b_pressed = button_b.is_low().unwrap();
+        match (a_pressed, b_pressed, state) {
+            (_, _, State::Init) => {
+                rprintln!("Init");
+                generate_random_board(&mut life_grid, &mut rng);
+                display.show(&mut timer, life_grid, FRAME_DELAY);
+                state = State::Running;
+            }
+            (_, _, State::Reset) => {
+                rprintln!("Reset");
+                timer.delay_ms(FRAME_DELAY * 5);
+                state = State::Init;
+            }
+            (true, _, State::Running) => {
+                rprintln!("Running - Button a pressed");
+                display.show(&mut timer, life_grid, FRAME_DELAY);
+                state = State::Randomize;
+            }
+            (false, true, State::Running) => {
+                rprintln!("Running - Button b pressed");
+                if ignore_b == 0 {
+                    compliment_board(&mut life_grid);
+                    display.show(&mut timer, life_grid, FRAME_DELAY);
+                    ignore_b = 5;
+                }
+                state = State::Running
+            }
+            (false, false, State::Running) => {
+                rprintln!("Running - no buttons pressed");
+                life(&mut life_grid);
+                display.show(&mut timer, life_grid, FRAME_DELAY);
+                if done(&life_grid) {
+                    state = State::Reset;
+                } else {
+                    state = State::Running;
+                }
+            }
+            (true, _, State::Randomize) => {
+                rprintln!("Randomize - Button a pressed");
+                generate_random_board(&mut life_grid, &mut rng);
+                display.show(&mut timer, life_grid, FRAME_DELAY);
+                state = State::Randomize
+            }
+            (false, _, State::Randomize) => {
+                rprintln!("Randomize - no buttons pressed");
+                display.show(&mut timer, life_grid, FRAME_DELAY);
+                state = State::Running;
+            }
+        };
+
+        if ignore_b > 0 {
+            ignore_b -= 1;
+        }
     }
 }
