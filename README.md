@@ -7,7 +7,8 @@ This is a simple project that runs Conway's game of life on the Microbit v2 led 
 ## Running
 
 With probe-rs installed and a microbit v2 connected run to flash onto the microbit.
-`cargon run --release`
+
+`cargo run --release`
 
 ## How it went
 
